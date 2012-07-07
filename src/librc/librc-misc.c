@@ -54,6 +54,54 @@ rc_yesno(const char *value)
 }
 librc_hidden_def(rc_yesno)
 
+
+/**
+ * Read the entire @file into the buffer and set @len to the
+ * size of the buffer when finished. For C strings, this will
+ * be strlen(buffer) + 1.
+ * Don't forget to free the buffer afterwards!
+ */
+bool
+rc_getfile(const char *file, char **buffer, size_t *len)
+{
+	bool ret = false;
+	FILE *fp;
+	int fd;
+	struct stat st;
+	size_t done, left;
+
+	fp = fopen(file, "re");
+	if (!fp)
+		return false;
+
+	/* assume fileno() never fails */
+	fd = fileno(fp);
+
+	if (fstat(fd, &st))
+		goto finished;
+
+	left = st.st_size;
+	*len = left + 1; /* NUL terminator */
+	*buffer = xrealloc(*buffer, *len);
+	while (left) {
+		done = fread(*buffer, sizeof(*buffer[0]), left, fp);
+		if (done == 0 && ferror(fp))
+			goto finished;
+		left -= done;
+	}
+	ret = true;
+
+ finished:
+	if (!ret) {
+		free(*buffer);
+		*len = 0;
+	} else
+		(*buffer)[*len - 1] = '\0';
+	fclose(fp);
+	return ret;
+}
+librc_hidden_def(rc_getfile)
+
 ssize_t
 rc_getline(char **line, size_t *len, FILE *fp)
 {
@@ -78,6 +126,53 @@ rc_getline(char **line, size_t *len, FILE *fp)
 	return last;
 }
 librc_hidden_def(rc_getline)
+
+char *
+rc_proc_getent(const char *ent)
+{
+#ifdef __linux__
+	FILE *fp;
+	char *proc, *p, *value = NULL;
+	size_t i, len;
+
+	if (!exists("/proc/cmdline"))
+		return NULL;
+
+	if (!(fp = fopen("/proc/cmdline", "r")))
+		return NULL;
+
+	proc = NULL;
+	i = 0;
+	if (rc_getline(&proc, &i, fp) == -1 || proc == NULL)
+		return NULL;
+
+	if (proc != NULL) {
+		len = strlen(ent);
+
+		while ((p = strsep(&proc, " "))) {
+			if (strncmp(ent, p, len) == 0 && (p[len] == '\0' || p[len] == ' ' || p[len] == '=')) {
+				p += len;
+
+				if (*p == '=')
+					p++;
+
+				value = xstrdup(p);
+			}
+		}
+	}
+
+	if (!value)
+		errno = ENOENT;
+
+	fclose(fp);
+	free(proc);
+
+	return value;
+#else
+	return NULL;
+#endif
+}
+librc_hidden_def(rc_proc_getent)
 
 RC_STRINGLIST *
 rc_config_list(const char *file)
@@ -117,6 +212,64 @@ rc_config_list(const char *file)
 	return list;
 }
 librc_hidden_def(rc_config_list)
+
+/*
+ * Override some specific rc.conf options on the kernel command line
+ */
+#ifdef __linux__
+static RC_STRINGLIST *rc_config_override(RC_STRINGLIST *config)
+{
+	RC_STRINGLIST *overrides;
+	RC_STRING *cline, *override, *config_np;
+	char *tmp = NULL;
+	char *value = NULL;
+	size_t varlen = 0;
+	size_t len = 0;
+
+	overrides = rc_stringlist_new();
+
+	/* A list of variables which may be overridden on the kernel command line */
+	rc_stringlist_add(overrides, "rc_parallel");
+
+	TAILQ_FOREACH(override, overrides, entries) {
+		varlen = strlen(override->value);
+		value = rc_proc_getent(override->value);
+
+		/* No need to continue if there's nothing to override */
+		if (!value) {
+			free(value);
+			continue;
+		}
+
+		if (value != NULL) {
+			len = varlen + strlen(value) + 2;
+			tmp = xmalloc(sizeof(char) * len);
+			snprintf(tmp, len, "%s=%s", override->value, value);
+		}
+
+		/*
+		 * Whenever necessary remove the old config entry first to prevent
+		 * duplicates
+		 */
+		TAILQ_FOREACH_SAFE(cline, config, entries, config_np) {
+			if (strncmp(override->value, cline->value, varlen) == 0
+				&& cline->value[varlen] == '=') {
+				rc_stringlist_delete(config, cline->value);
+				break;
+			}
+		}
+
+		/* Add the option (var/value) to the current config */
+		rc_stringlist_add(config, tmp);
+
+		free(tmp);
+		free(value);
+	}
+
+	rc_stringlist_free(overrides);
+	return config;
+}
+#endif
 
 RC_STRINGLIST *
 rc_config_load(const char *file)
@@ -173,10 +326,8 @@ rc_config_load(const char *file)
 		/* In shells the last item takes precedence, so we need to remove
 		   any prior values we may already have */
 		TAILQ_FOREACH(cline, config, entries) {
-			p = strchr(cline->value, '=');
-			if (p && strncmp(entry, cline->value,
-				(size_t)(p - cline->value)) == 0)
-			{
+			i = strlen(entry);
+			if (strncmp(entry, cline->value, i) == 0 && cline->value[i] == '=') {
 				/* We have a match now - to save time we directly replace it */
 				free(cline->value);
 				cline->value = newline;
@@ -193,6 +344,13 @@ rc_config_load(const char *file)
 	}
 	rc_stringlist_free(list);
 
+#ifdef __linux__
+	/* Only override rc.conf settings */
+	if (strcmp(file, RC_CONF) == 0) {
+		config = rc_config_override(config);
+	}
+#endif
+
 	return config;
 }
 librc_hidden_def(rc_config_load)
@@ -202,15 +360,13 @@ rc_config_value(RC_STRINGLIST *list, const char *entry)
 {
 	RC_STRING *line;
 	char *p;
-	size_t len, dif;
+	size_t len;
 
 	len = strlen(entry);
 	TAILQ_FOREACH(line, list, entries) {
 		p = strchr(line->value, '=');
 		if (p != NULL) {
-			dif = (p - line->value);
-			if (dif == len &&
-			    strncmp(entry, line->value, dif) == 0)
+			if (strncmp(entry, line->value, len) == 0 && line->value[len] == '=')
 				return ++p;
 		}
 	}
@@ -235,7 +391,7 @@ rc_conf_value(const char *setting)
 		atexit(_free_rc_conf);
 #endif
 
-		/* Support old configs */
+		/* Support old configs. */
 		if (exists(RC_CONF_OLD)) {
 			old = rc_config_load(RC_CONF_OLD);
 			TAILQ_CONCAT(rc_conf, old, entries);

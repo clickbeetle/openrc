@@ -8,7 +8,7 @@ depend()
 {
 	need localmount termencoding
 	after hotplug bootmisc
-	keyword -openvz -prefix -uml -vserver -xenu -lxc
+	keyword -openvz -uml -vserver -xenu -lxc
 }
 
 start()
@@ -49,12 +49,12 @@ start()
 			retval=1
 			break
 		fi
-		x=$(($x + 1))
+		: $(( x += 1 ))
 	done
 	eend $retval
 
 	# Store the last font so we can use it ASAP on boot
-	if [ $retval -eq 0 -a -w "$RC_LIBEXECDIR" ]; then
+	if [ $retval -eq 0 ] && checkpath -W "$RC_LIBEXECDIR"; then
 		mkdir -p "$RC_LIBEXECDIR"/console
 		for font in /usr/share/consolefonts/"$consolefont".*; do
 			:

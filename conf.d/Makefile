@@ -1,19 +1,23 @@
 DIR=	${CONFDIR}
-CONF=	bootmisc fsck hostname localmount network staticroute urandom
+CONF=	bootmisc fsck hostname localmount network staticroute urandom \
+	${CONF-${OS}}
 
 TARGETS+=	network staticroute
 CLEANFILES+=	network staticroute
 
 MK=	../mk
 include ${MK}/os.mk
-include Makefile.${OS}
+
+CONF-FreeBSD=	ipfw moused powerd rarpd savecore syscons
+
+CONF-Linux=	consolefont dmesg hwclock keymaps killprocs modules
+
+CONF-NetBSD=	moused rarpd savecore
+
 include ${MK}/scripts.mk
 
-SOS?=	BSD
+network: network.in network${SFX}
+	cat $^ > $@
 
-network: network.in network.${SOS}
-	cp $@.in $@
-	[ -e $@.${SOS} ] && cat $@.${SOS} >> $@ || true
-
-staticroute: staticroute.${SOS}
-	cp $@.${SOS} $@
+staticroute: staticroute${SFX}
+	cp $@${SFX} $@

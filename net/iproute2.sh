@@ -1,18 +1,9 @@
 # Copyright (c) 2007-2008 Roy Marples <roy@marples.name>
 # Released under the 2-clause BSD license.
 
-_ip()
-{
-	if [ -x /bin/ip ]; then
-		echo /bin/ip
-	else
-		echo /sbin/ip
-	fi
-}
-
 iproute2_depend()
 {
-	program $(_ip)
+	program ip
 	provide interface
 	after ifconfig
 }
@@ -29,24 +20,24 @@ _down()
 
 _exists()
 {
-	grep -Eq "^[[:space:]]*${IFACE}:" /proc/net/dev
+	[ -e /sys/class/net/"$IFACE" ]
 }
 
 _ifindex()
 {
-	local line= i=-2
-	while read line; do
-		i=$((${i} + 1))
-		[ ${i} -lt 1 ] && continue
-		case "${line}" in
-			"${IFACE}:"*) echo "${i}"; return 0;;
-		esac
-	done < /proc/net/dev
-
-	# Return the next available index
-	i=$((${i} + 1))
-	echo "${i}"
-	return 1
+	local index=-1
+	local f v
+	if [ -e /sys/class/net/"${IFACE}"/ifindex ]; then
+		index=$(cat /sys/class/net/"${IFACE}"/ifindex)
+	else
+		for f in /sys/class/net/*/ifindex ; do
+			v=$(cat $f)
+			[ $v -gt $index ] && index=$v
+		done
+		: $(( index += 1 ))
+	fi
+	echo "${index}"
+	return 0
 }
 
 _is_wireless()
@@ -110,39 +101,56 @@ _add_address()
 		ip addr add "$@" dev "${IFACE}" 2>/dev/null
 		return 0
 	fi
-
-	# Convert an ifconfig line to iproute2
-	if [ "$2" = "netmask" ]; then
-		local one="$1" three="$3"
-		shift; shift; shift
-		set -- "${one}/$(_netmask2cidr "${three}")" "$@"
-	fi
-
-	# tunnel keyword is 'peer' in iproute2, but 'pointopoint' in ifconfig.
-	if [ "$2" = "pointopoint" ]; then
-		local one="$1"
-		shift; shift
-		set -- "${one}" "peer" "$@"
-	fi
+	local x
+	local address netmask broadcast peer anycast label scope
+	local valid_lft preferred_lft home nodad
+	local confflaglist
+	address="$1" ; shift
+	while [ -n "$*" ]; do
+		x=$1 ; shift
+		case "$x" in
+			netmask|ne*)
+				netmask="/$(_netmask2cidr "$1")" ; shift ;;
+			broadcast|brd|br*)
+				broadcast="$1" ; shift ;;
+			pointopoint|pointtopoint|peer|po*|pe*)
+				peer="$1" ; shift ;;
+			anycast|label|scope|valid_lft|preferred_lft|a*|l*|s*|v*|pr*)
+				case $x in
+					a*) x=anycast ;;
+					l*) x=label ;;
+					s*) x=scope ;;
+					v*) x=valid_lft ;;
+					pr*) x=preferred_lft ;;
+				esac
+				eval "$x=$1" ; shift ;;
+			home|nodad|h*|no*)
+				case $x in h*) x=home ;; n*) x=nodad ;; esac
+				# FIXME: If we need to reorder these, this will take more code
+				confflaglist="${confflaglist} $x" ; ;;
+			*)
+				ewarn "Unknown argument to config_$IFACE: $x"
+		esac
+	done
 
 	# Always scope lo addresses as host unless specified otherwise
 	if [ "${IFACE}" = "lo" ]; then
-		set -- "$@" "scope" "host"
+		[ -z "$scope" ] && scope="host"
 	fi
 
-	# IPv4 specifics
-	case "$1" in
-		*.*.*.*)
-			case "$@" in
-				*" brd "*);;
-				*" broadcast "*);;
-				*) set -- "$@" brd +;;
-			esac
-			;;
-	esac
+	# figure out the broadcast address if it is not specified
+	# This must NOT be set for IPv6 addresses
+	if [ "${address#*:}" = "${address}" ]; then
+		[ -z "$broadcast" ] && broadcast="+"
+	elif [ -n "$broadcast" ]; then
+		eerror "Broadcast keywords are not valid with IPv6 addresses"
+		return 1
+	fi
 
-	veinfo ip addr add "$@" dev "${IFACE}"
-	ip addr add "$@" dev "${IFACE}"
+	# This must appear on a single line, continuations cannot be used
+	set -- "${address}${netmask}" ${peer:+peer} ${peer} ${broadcast:+broadcast} ${broadcast} ${anycast:+anycast} ${anycast} ${label:+label} ${label} ${scope:+scope} ${scope} dev "${IFACE}" ${valid_lft:+valid_lft} $valid_lft ${preferred_lft:+preferred_lft} $preferred_lft $confflaglist
+	veinfo ip addr add "$@"
+	ip addr add "$@"
 }
 
 _add_route()
@@ -152,6 +160,12 @@ _add_route()
 	if [ "$1" = "-A" -o "$1" = "-f" -o "$1" = "-family" ]; then
 		family="-f $2"
 		shift; shift
+	elif [ "$1" = "-4" ]; then
+	    family="-f inet"
+		shift
+	elif [ "$1" = "-6" ]; then
+	    family="-f inet6"
+		shift
 	fi
 
 	if [ $# -eq 3 ]; then
@@ -214,7 +228,13 @@ _trim() {
 # This is our interface to Routing Policy Database RPDB
 # This allows for advanced routing tricks
 _ip_rule_runner() {
-	local cmd rules OIFS="${IFS}"
+	local cmd rules OIFS="${IFS}" family
+	if [ "$1" = "-4" -o "$1" = "-6" ]; then
+		family="$1"
+		shift
+	else
+		family="-4"
+	fi
 	cmd="$1"
 	rules="$2"
 	veindent
@@ -224,7 +244,7 @@ _ip_rule_runner() {
 		ruN="$(_trim "${ru}")"
 		[ -z "${ruN}" ] && continue
 		vebegin "${cmd} ${ruN}"
-		ip rule ${cmd} ${ru}
+		ip $family rule ${cmd} ${ru}
 		veend $?
 		local IFS="$__IFS"
 	done
@@ -280,15 +300,30 @@ iproute2_post_start()
 	if [ -e /proc/net/route ]; then
 		local rules="$(_get_array "rules_${IFVAR}")"
 		if [ -n "${rules}" ]; then
-			if ! ip rule list | grep -q "^"; then
+			if ! ip -4 rule list | grep -q "^"; then
 				eerror "IP Policy Routing (CONFIG_IP_MULTIPLE_TABLES) needed for ip rule"
 			else
 				service_set_value "ip_rule" "${rules}"
-				einfo "Adding RPDB rules"
-				_ip_rule_runner add "${rules}"
+				einfo "Adding IPv4 RPDB rules"
+				_ip_rule_runner -4 add "${rules}"
 			fi
 		fi
-		ip route flush table cache dev "${IFACE}"
+		ip -4 route flush table cache dev "${IFACE}"
+	fi
+
+	# Kernel may not have IPv6 built in
+	if [ -e /proc/net/ipv6_route ]; then
+		local rules="$(_get_array "rules6_${IFVAR}")"
+		if [ -n "${rules}" ]; then
+			if ! ip -6 rule list | grep -q "^"; then
+				eerror "IPv6 Policy Routing (CONFIG_IPV6_MULTIPLE_TABLES) needed for ip rule"
+			else
+				service_set_value "ip6_rule" "${rules}"
+				einfo "Adding IPv6 RPDB rules"
+				_ip_rule_runner -6 add "${rules}"
+			fi
+		fi
+		ip -6 route flush table cache dev "${IFACE}"
 	fi
 
 	if _iproute2_ipv6_tentative; then
@@ -296,7 +331,7 @@ iproute2_post_start()
 		while [ $n -ge 0 ]; do
 			_iproute2_ipv6_tentative || break
 			sleep 1
-			n=$(($n - 1))
+			: $(( n -= 1 ))
 		done
 		[ $n -ge 0 ]
 		eend $?
@@ -311,10 +346,28 @@ iproute2_post_stop()
 	if [ -e /proc/net/route ]; then
 		local rules="$(service_get_value "ip_rule")"
 		if [ -n "${rules}" ]; then
-			einfo "Removing RPDB rules"
-			_ip_rule_runner del "${rules}"
+			einfo "Removing IPv4 RPDB rules"
+			_ip_rule_runner -4 del "${rules}"
 		fi
-		ip route flush table cache dev "${IFACE}"
+
+		# Only do something if the interface actually exist
+		if _exists; then
+			ip -4 route flush table cache dev "${IFACE}"
+		fi
+	fi
+
+	# Kernel may not have IPv6 built in
+	if [ -e /proc/net/ipv6_route ]; then
+		local rules="$(service_get_value "ip6_rule")"
+		if [ -n "${rules}" ]; then
+			einfo "Removing IPv6 RPDB rules"
+			_ip_rule_runner -6 del "${rules}"
+		fi
+
+		# Only do something if the interface actually exist
+		if _exists; then
+			ip -6 route flush table cache dev "${IFACE}"
+		fi
 	fi
 
 	# Don't delete sit0 as it's a special tunnel
@@ -325,4 +378,27 @@ iproute2_post_stop()
 			eend $?
 		fi
 	fi
+}
+
+# Is the interface administratively/operationally up?
+# The 'UP' status in ifconfig/iproute2 is the administrative status
+# Operational state is available in iproute2 output as 'state UP', or the
+# operstate sysfs variable.
+# 0: up
+# 1: down
+# 2: invalid arguments
+is_admin_up()
+{
+	local iface="$1"
+	[ -z "$iface" ] && iface="$IFACE"
+	ip link show dev $iface | \
+	sed -n '1,1{ /[<,]UP[,>]/{ q 0 }}; q 1; '
+}
+
+is_oper_up()
+{
+	local iface="$1"
+	[ -z "$iface" ] && iface="$IFACE"
+	read state </sys/class/net/"${iface}"/operstate
+	[ "x$state" = "up" ]
 }

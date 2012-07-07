@@ -19,13 +19,18 @@ depend()
 	local IFVAR=$(shell_var "${IFACE}")
 
 	need localmount
+	if [ "$RC_UNAME" = Linux ]; then
+		need sysfs
+	fi
 	after bootmisc
-	provide net
-	keyword -jail -prefix -vserver
+	keyword -jail -vserver
 
 	case "${IFACE}" in
-		lo|lo0);;
-		*) after net.lo net.lo0;;
+		lo|lo0) provide lo;;
+		*)
+			after net.lo net.lo0 dbus
+			provide net
+			;;
 	esac
 
 	if [ "$(command -v "depend_${IFVAR}")" = "depend_${IFVAR}" ]; then
@@ -37,17 +42,32 @@ depend()
 		eval prov=\$rc_${dep}_${IFVAR}
 		if [ -n "${prov}" ]; then
 			${dep} ${prov}
+			ewarn "rc_${dep}_${IFVAR} is deprecated."
+			ewarn "Please use rc_net_${IFVAR}_${dep} instead."
 		fi
 	done
 }
 
 # Support bash arrays - sigh
+_array_helper()
+{
+	local _a=
+
+	eval _a=\$$1
+	_a=$(echo "${_a}" | sed -e 's:^[[:space:]]*::' -e 's:[[:space:]]*$::' -e '/^$/d' -e 's:[[:space:]]\{1,\}: :g')
+
+	[ -n "${_a}" ] && printf "%s\n" "${_a}"
+}
+
 _get_array()
 {
 	local _a=
 	if [ -n "${BASH}" ]; then
 		case "$(declare -p "$1" 2>/dev/null)" in
 			"declare -a "*)
+				ewarn "You are using a bash array for $1."
+				ewarn "This feature will be removed in the future."
+				ewarn "Please see net.example for the correct format for $1."
 				eval "set -- \"\${$1[@]}\""
 				for _a; do
 					printf "%s\n" "${_a}"
@@ -57,10 +77,7 @@ _get_array()
 		esac
 	fi
 
-	eval _a=\$$1
-	printf "%s" "${_a}"
-	printf "\n"
-	[ -n "${_a}" ]
+	_array_helper $1
 }
 
 # Flatten bash arrays to simple strings
@@ -69,6 +86,9 @@ _flatten_array()
 	if [ -n "${BASH}" ]; then
 		case "$(declare -p "$1" 2>/dev/null)" in
 			"declare -a "*)
+				ewarn "You are using a bash array for $1."
+				ewarn "This feature will be removed in the future."
+				ewarn "Please see net.example for the correct format for $1."
 				eval "set -- \"\${$1[@]}\""
 				for x; do
 					printf "'%s' " "$(printf "$x" | sed "s:':'\\\'':g")"
@@ -78,10 +98,7 @@ _flatten_array()
 		esac
 	fi
 
-	eval _a=\$$1
-	printf "%s" "${_a}"
-	printf "\n"
-	[ -n "${_a}" ]
+	_array_helper $1
 }
 
 _wait_for_carrier()
@@ -105,7 +122,7 @@ _wait_for_carrier()
 			eend 0
 			return 0
 		fi
-		timeout=$((${timeout} - 1))
+		: $(( timeout -= 1 ))
 		[ "${efunc}" = "einfon" ] && printf "."
 	done
 
@@ -134,9 +151,9 @@ _netmask2cidr()
 	local i= len=
 	local IFS=.
 	for i in $1; do
-		while [ ${i} != "0" ]; do
-			len=$((${len} + ${i} % 2))
-			i=$((${i} >> 1))
+		while [ ${i} -ne 0 ]; do
+			: $(( len += i % 2 ))
+			: $(( i >>= 1 ))
 		done
 	done
 
@@ -157,6 +174,36 @@ _configure_variables()
 			fi
 		done
 	done
+}
+
+_which()
+{
+	local i OIFS
+	# Empty
+	[ -z "$1" ] && return
+	# check paths
+	OIFS="$IFS"
+	IFS=:
+	for i in $PATH ; do
+		[ -x $i/$1 ] && echo $i/$1 && break
+	done
+	IFS=$OIFS
+}
+
+# Like _which, but also consider shell builtins, and multiple alternatives
+_program_available()
+{
+	[ -z "$1" ] && return 0
+	local x=
+	for x; do
+		case "${x}" in
+			/*) [ -x "${x}" ] && break;;
+			*) type "${x}" >/dev/null 2>&1 && break;;
+		esac
+		unset x
+	done
+	[ -n "${x}" ] && echo $x && return 0
+	return 1
 }
 
 _show_address()
@@ -267,7 +314,7 @@ _gen_module_list()
 		echo "module_${i}_program_start='${PROGRAM_START}'" >> "${MODULESLIST}"
 		echo "module_${i}_program_stop='${PROGRAM_STOP}'" >> "${MODULESLIST}"
 		echo "module_${i}_provide='${PROVIDE}'" >> "${MODULESLIST}"
-		i=$((${i} + 1))
+		: $(( i += 1 ))
 	done
 	echo "module_${i}=" >> "${MODULESLIST}"
 	)
@@ -294,18 +341,17 @@ _load_modules()
 
 	local i=-1 x= mod= f= provides=
 	while true; do
-		i=$((${i} + 1))
+		: $(( i += 1 ))
 		eval mod=\$module_${i}
 		[ -z "${mod}" ] && break
 		[ -e "${MODULESDIR}/${mod}.sh" ] || continue
 
 		eval set -- \$module_${i}_program
 		if [ -n "$1" ]; then
-			x=
-			for x; do
-				[ -x "${x}" ] && break
-			done
-			[ -x "${x}" ] || continue
+			if ! _program_available "$@" >/dev/null; then
+				vewarn "Skipping module $mod due to missing program: $@"
+				continue
+			fi
 		fi
 		if ${starting}; then
 			eval set -- \$module_${i}_program_start
@@ -313,15 +359,10 @@ _load_modules()
 			eval set -- \$module_${i}_program_stop
 		fi
 		if [ -n "$1" ]; then
-			x=
-			for x; do
-				case "${x}" in
-					/*) [ -x "${x}" ] && break;;
-					*) type "${x}" >/dev/null 2>&1 && break;;
-				esac
-				unset x
-			done
-			[ -n "${x}" ] || continue
+			if ! _program_available "$@" >/dev/null; then
+				vewarn "Skipping module $mod due to missing program: $@"
+				continue
+			fi
 		fi
 
 		eval provides=\$module_${i}_provide
@@ -397,16 +438,18 @@ _load_config()
 	set -- ${config}
 
 	# We should support a space separated array for cidr configs
+	# But only as long as they do not contain other parameters for the address
 	if [ $# = 1 ]; then
 		unset IFS
 		set -- ${config}
 		# Of course, we may have a single address added old style.
-		case "$2" in
-			netmask|broadcast|brd|brd+|peer|pointopoint)
-				local IFS="$__IFS"
-				set -- ${config}
-				;;
-		esac
+		# If the NEXT argument is a v4 or v6 address, it's the next config.
+		# Otherwise, it's arguments to the first config...
+		if [ "${2#*.*}" = "${2}" -a "${2#*:*}" = "${2}" ]; then
+			# Not an IPv4/IPv6
+			local IFS="$__IFS"
+			set -- ${config}
+		fi
 	fi
 
 	# Ensure that loopback has the correct address
@@ -428,7 +471,7 @@ _load_config()
 	# so modules can influence it
 	for cmd; do
 		eval config_${config_index}="'${cmd}'"
-		config_index=$((${config_index} + 1))
+		: $(( config_index += 1 ))
 	done
 	# Terminate the list
 	eval config_${config_index}=
@@ -436,7 +479,7 @@ _load_config()
 	config_index=0
 	for cmd in ${fallback}; do
 		eval fallback_${config_index}="'${cmd}'"
-		config_index=$((${config_index} + 1))
+		: $(( config_index += 1 ))
 	done
 	# Terminate the list
 	eval fallback_${config_index}=
@@ -478,7 +521,9 @@ start()
 {
 	local IFACE=${RC_SVCNAME#*.} oneworked=false fallback=false module=
 	local IFVAR=$(shell_var "${IFACE}") cmd= our_metric=
-	local metric=0
+	local metric=0 _up_before_preup
+	eval _up_before_preup="\$up_before_preup_${IFVAR}"
+	[ -z "${_up_before_preup}" ] && _up_before_preup=$up_before_preup
 
 	einfo "Bringing up interface ${IFACE}"
 	eindent
@@ -492,7 +537,7 @@ start()
 	# available in preup and afterwards incase the user inadvertently
 	# brings it down
 	if [ "$(command -v preup)" = "preup" ]; then
-		_up 2>/dev/null
+		yesno "${_up_before_preup:-yes}" && _up 2>/dev/null
 		ebegin "Running preup"
 		eindent
 		preup || return 1
@@ -531,7 +576,7 @@ start()
 	if [ -n "${our_metric}" ]; then
 		metric=${our_metric}
 	elif [ "${IFACE}" != "lo" -a "${IFACE}" != "lo0" ]; then
-		metric=$((${metric} + $(_ifindex)))
+		: $(( metric += $(_ifindex) ))
 	fi
 
 	while true; do
@@ -539,7 +584,9 @@ start()
 		[ -z "${config}" ] && break
 
 		set -- ${config}
-		ebegin "$1"
+		if [ "$1" != "null" -a "$1" != "noop" ]; then
+			ebegin "$1"
+		fi
 		eindent
 		case "$1" in
 			noop)
@@ -569,11 +616,11 @@ start()
 				eindent
 				eval config_${config_index}=\$config
 				unset fallback_${config_index}
-				config_index=$((${config_index} - 1))
+				: $(( config_index -= 1 ))
 			fi
 		fi
 		eoutdent
-		config_index=$((${config_index} + 1))
+		: $(( config_index += 1 ))
 	done
 
 	if ! ${oneworked}; then

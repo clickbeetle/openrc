@@ -9,4 +9,3 @@ OS?= 		${_OS}
 include ${MK}/os-${OS}.mk
 
 RC_LIB=		/$(LIBNAME)/rc
-

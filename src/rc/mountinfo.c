@@ -387,9 +387,11 @@ mountinfo(int argc, char **argv)
 	regex_t *skip_point_regex = NULL;
 	RC_STRINGLIST *nodes;
 	RC_STRING *s;
+	char real_path[PATH_MAX + 1];
 	int opt;
 	int result;
 	bool quiet;
+	char *this_path;
 
 	/* Ensure that we are only quiet when explicitly told to be */
 	unsetenv("EINFO_QUIET");
@@ -449,15 +451,18 @@ mountinfo(int argc, char **argv)
 			args.mount_type = mount_from;
 			break;
 
-			case_RC_COMMON_GETOPT
-			    }
+		case_RC_COMMON_GETOPT
+		}
 	}
 
 	while (optind < argc) {
 		if (argv[optind][0] != '/')
 			eerrorx("%s: `%s' is not a mount point",
 			    argv[0], argv[optind]);
-		rc_stringlist_add(args.mounts, argv[optind++]);
+		this_path = argv[optind++];
+		if (realpath(this_path, real_path))
+			this_path = real_path;
+		rc_stringlist_add(args.mounts, this_path);
 	}
 	nodes = find_mounts(&args);
 	rc_stringlist_free(args.mounts);

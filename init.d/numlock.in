@@ -9,7 +9,7 @@ ttyn=${rc_tty_number:-${RC_TTY_NUMBER:-12}}
 depend()
 {
 	need localmount
-	keyword -openvz -prefix -vserver -lxc
+	keyword -openvz -vserver -lxc
 }
 
 _setleds()
@@ -21,7 +21,7 @@ _setleds()
 
 	while [ $i -le $ttyn ]; do
 		setleds -D "$1"num < $dev$i || retval=1
-		i=$(($i + 1))
+		: $(( i += 1 ))
 	done
 
 	return $retval

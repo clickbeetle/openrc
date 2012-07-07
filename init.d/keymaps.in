@@ -8,7 +8,7 @@ depend()
 {
 	need localmount termencoding
 	after bootmisc
-	keyword -openvz -prefix -uml -vserver -xenu -lxc
+	keyword -openvz -uml -vserver -xenu -lxc
 }
 
 start()
@@ -47,7 +47,7 @@ start()
 	n=1
 	while [ $n -le $ttyn ]; do
 		kbd_mode $kmode -C $ttydev$n
-		n=$(($n + 1))
+		: $(( n += 1 ))
 	done
 	eend 0
 
@@ -63,7 +63,7 @@ start()
 	fi
 
 	# Save the keymapping for use immediately at boot
-	if [ -w "$RC_LIBEXECDIR" ]; then
+	if checkpath -W "$RC_LIBEXECDIR"; then
 		mkdir -p "$RC_LIBEXECDIR"/console
 		dumpkeys >"$RC_LIBEXECDIR"/console/keymap
 	fi

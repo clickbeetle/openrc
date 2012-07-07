@@ -6,7 +6,7 @@ description="Mount the sys filesystem."
 
 depend()
 {
-	keyword -prefix -vserver
+	keyword -vserver
 }
 
 mount_sys()
@@ -50,6 +50,47 @@ mount_misc()
 			eend $?
 		fi
 	fi
+
+	# Setup Kernel Support for configfs
+	if [ -d /sys/kernel/config ] && ! mountinfo -q /sys/kernel/config; then
+		if grep -qs configfs /proc/filesystems; then
+			ebegin "Mounting config filesystem"
+			mount -n -t configfs -o  nodev,noexec,nosuid \
+				configfs /sys/kernel/config
+			eend $?
+		fi
+	fi
+
+	# set up kernel support for cgroups
+	if [ -d /sys/fs/cgroup ] && ! mountinfo -q /sys/fs/cgroup; then
+		if grep -qs cgroup /proc/filesystems; then
+			ebegin "Mounting cgroup filesystem"
+			local opts="nodev,noexec,nosuid,mode=755,size=${rc_cgroupsize:-10m}"
+			mount -n -t tmpfs -o ${opts} cgroup_root /sys/fs/cgroup
+			eend $?
+		fi
+	fi
+}
+
+mount_cgroups()
+{
+	yesno ${rc_cgroups:-YES} && [ -e /proc/cgroups ] && \
+		mountinfo -q /sys/fs/cgroup || return 0
+
+	local agent="@LIBEXECDIR@/sh/cgroup-release-agent.sh"
+	mkdir /sys/fs/cgroup/openrc
+	mount -n -t cgroup \
+		-o none,nodev,noexec,nosuid,name=openrc,release_agent="$agent" \
+		openrc /sys/fs/cgroup/openrc
+	echo 1 > /sys/fs/cgroup/openrc/notify_on_release
+	while read name hier groups enabled rest; do
+		case "${enabled}" in
+			1)	mkdir /sys/fs/cgroup/${name}
+				mount -n -t cgroup -o nodev,noexec,nosuid,${name} \
+					${name} /sys/fs/cgroup/${name}
+				;;
+		esac
+	done < /proc/cgroups
 }
 
 start()
@@ -59,6 +100,11 @@ start()
 	retval=$?
 	if [ $retval -eq 0 ]; then
 		mount_misc
+		retval=$?
+	fi
+	if [ $retval -eq 0 ]; then
+		mount_cgroups
+		retval=$?
 	fi
 	return $retval
 }

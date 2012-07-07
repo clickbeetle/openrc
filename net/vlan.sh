@@ -1,18 +1,9 @@
 # Copyright (c) 2007-2008 Roy Marples <roy@marples.name>
 # Released under the 2-clause BSD license.
 
-_ip()
-{
-	if [ -x /bin/ip ]; then
-		echo /bin/ip
-	else
-		echo /sbin/ip
-	fi
-}
-
 vlan_depend()
 {
-	program $(_ip)
+	program ip
 	after interface
 	before dhcp
 }
@@ -51,6 +42,14 @@ vlan_pre_start()
 		eerror "You must convert your vconfig_ VLAN entries to vlan${N} entries."
 		return 1
 	fi
+	local vlans=
+	eval vlans=\$vlans_${IFVAR}
+	[ -z "$vlans" ] && return 0
+	case " ${MODULES} " in
+		*" ifconfig "*)
+				eerror "sys-apps/iproute2 is required to configure VLANs"
+				return 1 ;;
+	esac
 }
 
 vlan_post_start()
@@ -77,7 +76,17 @@ vlan_post_start()
 		eval vegress=\$vlan${vlan}_egress
 		[ -z "${vegress}" ] || vegress="egress-qos-map ${vegress}"
 
-		e="$(ip link add link "${IFACE}" name "${vname}" type vlan id "${vlan}" ${vflags} ${vingress} ${vegress} 2>&1 1>/dev/null)"
+		local txqueuelen=
+		eval txqueuelen=\$txqueuelen_vlan${vlan}
+		local mac=
+		eval mac=\$mac_vlan${vlan}
+		local broadcast=
+		eval broadcast=\$broadcast_vlan${vlan}
+		local mtu=
+		eval mtu=\$mtu_vlan${vlan}
+		local opts="${txqueuelen:+txqueuelen} ${txqueuelen} ${mac:+address} ${mac} ${broadcast:+broadcast} ${broadcast} ${mtu:+mtu} ${mtu}"
+
+		e="$(ip link add link "${IFACE}" name "${vname}" ${opts} type vlan id "${vlan}" ${vflags} ${vingress} ${vegress} 2>&1 1>/dev/null)"
 		if [ -n "${e}" ]; then
 			eend 1 "${e}"
 			continue
@@ -101,9 +110,11 @@ vlan_post_start()
 	return 0
 }
 
-vlan_post_stop()
+vlan_pre_stop()
 {
 	local vlan=
+
+	_exists || return 0
 
 	for vlan in $(_get_vlans); do
 		einfo "Removing VLAN ${vlan##*.} from ${IFACE}"

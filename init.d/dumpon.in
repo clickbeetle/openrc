@@ -6,7 +6,7 @@ description="Configures a specific kernel dump device."
 
 depend() {
 	need swap
-	keyword -jail -prefix
+	keyword -jail
 }
 
 start() {
@@ -19,7 +19,7 @@ start() {
 }
 
 stop() {
-	ebegin "Deactiving kernel core dump device"
+	ebegin "Deactivating kernel core dump device"
 	dumpon off
 	eend $?
 }

@@ -1,13 +1,9 @@
 # Copyright (c) 2011 by Gentoo Foundation
 # Released under the 2-clause BSD license.
 
-_ethtool() {
-	echo /usr/sbin/ethtool
-}
-
 ethtool_depend()
 {
-	program $(_ethtool)
+	program ethtool
 	before interface
 }
 
@@ -29,8 +25,9 @@ ethtool_pre_start() {
 
 		# Skip everything if no arguments
 		[ -z "${args}" ] && continue
-		
+
 		# Split on \n
+		OIFS="${IFS}"
 		local IFS="$__IFS"
 
 		for p in ${args} ; do
@@ -38,10 +35,11 @@ ethtool_pre_start() {
 			local args_pretty="$(_trim "${p}")"
 			# Do nothing if empty
 			[ -z "${args_pretty}" ] && continue
+			[ "${opt}" = "ring" ] && opt="set-ring"
 			args_pretty="--${opt} $IFACE ${args_pretty}"
 			args="--${opt} $IFACE ${args}"
 			ebegin "ethtool ${args_pretty}"
-			$(_ethtool) ${args}
+			ethtool ${args}
 			rc=$?
 			eend $rc "ethtool exit code $rc"
 			# TODO: ethtool has MANY different exit codes, with no

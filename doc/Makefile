@@ -1,7 +1,11 @@
 DIR=	${DOCDIR}/openrc
+SRCS=	net.example.in
 INC=	net.example
 
 MK=	../mk
 include ${MK}/os.mk
-include Makefile.${OS}
+
+%.example.in: %.example${SFX}
+	${CP} $< $@
+
 include ${MK}/scripts.mk

@@ -4,12 +4,7 @@
 
 include Makefile.inc
 
-SUBDIR=		conf.d etc init.d local.d man scripts sh src
-
-# Build our old net foo or not
-ifeq (${MKOLDNET},yes)
-SUBDIR+=	net doc
-endif
+SUBDIR=		conf.d doc etc init.d local.d sysctl.d man net scripts sh src
 
 # Build pkgconfig or not
 MKPKGCONFIG?=	yes
@@ -30,6 +25,8 @@ include ${MK}/dist.mk
 include ${MK}/git.mk
 
 _installafter:
+ifneq ($(OS),Linux)
 	${INSTALL} -d ${DESTDIR}/${LIBEXECDIR}/init.d
+endif
 	${INSTALL} -d ${DESTDIR}/${LIBEXECDIR}/tmp
 	${ECHO} "${VERSION}${GITVER}" > ${DESTDIR}/${LIBEXECDIR}/version

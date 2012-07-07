@@ -36,7 +36,11 @@ __BEGIN_DECLS
 #define RC_SYSCONFDIR		"@SYSCONFDIR@"
 #define RC_LIBDIR               "@PREFIX@/@LIB@/rc"
 #define RC_LIBEXECDIR           "@LIBEXECDIR@"
+#ifdef __linux__
+#define RC_SVCDIR               "@PREFIX@/run/openrc"
+#else
 #define RC_SVCDIR               RC_LIBEXECDIR "/init.d"
+#endif
 #define RC_RUNLEVELDIR          RC_SYSCONFDIR "/runlevels"
 #define RC_INITDIR              RC_SYSCONFDIR "/init.d"
 #define RC_CONFDIR              RC_SYSCONFDIR "/conf.d"
@@ -276,7 +280,6 @@ bool rc_service_daemons_crashed(const char *);
 #define RC_SYS_JAIL    "JAIL"
 #define RC_SYS_OPENVZ  "OPENVZ"
 #define RC_SYS_LXC     "LXC"
-#define RC_SYS_PREFIX  "PREFIX"
 #define RC_SYS_UML     "UML"
 #define RC_SYS_VSERVER "VSERVER"
 #define RC_SYS_XEN0    "XEN0"
@@ -360,6 +363,11 @@ bool rc_newer_than(const char *, const char *, time_t *, char *);
  * @param filename of the oldest target (needs mtime param)
  * @return true if source is older than target, otherwise false */
 bool rc_older_than(const char *, const char *, time_t *, char *);
+
+/*! Read variables/values from /proc/cmdline
+ * @param value
+ * @return pointer to the value, otherwise NULL */
+char *rc_proc_getent(const char *);
 
 /*! Update the cached dependency tree if it's older than any init script,
  * its configuration file or an external configuration file the init script
@@ -543,6 +551,9 @@ typedef LIST_HEAD(rc_pidlist, rc_pid) RC_PIDLIST;
  * @param pid to check for
  * @return NULL terminated list of pids */
 RC_PIDLIST *rc_find_pids(const char *, const char *const *, uid_t, pid_t);
+
+/* Basically the same as rc_getline() below, it just returns multiple lines */
+bool rc_getfile(const char *, char **, size_t *);
 
 /* getline is a handy glibc function that not all libcs have, so
  * we have our own */

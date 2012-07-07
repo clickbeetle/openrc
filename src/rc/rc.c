@@ -167,43 +167,6 @@ cleanup(void)
 #endif
 }
 
-#ifdef __linux__
-static char *
-proc_getent(const char *ent)
-{
-	FILE *fp;
-	char *proc, *p, *value = NULL;
-	size_t i;
-
-	if (!exists("/proc/cmdline"))
-		return NULL;
-
-	if (!(fp = fopen("/proc/cmdline", "r"))) {
-		eerror("failed to open `/proc/cmdline': %s", strerror(errno));
-		return NULL;
-	}
-
-	proc = NULL;
-	i = 0;
-	if (rc_getline(&proc, &i, fp) == -1 || proc == NULL)
-		eerror("rc_getline: %s", strerror(errno));
-	if (*proc && (p = strstr(proc, ent))) {
-		i = p - proc;
-		if (i == '\0' || proc[i - 1] == ' ') {
-			p += strlen(ent);
-			if (*p == '=')
-				p++;
-			value = xstrdup(strsep(&p, " "));
-		}
-	} else
-		errno = ENOENT;
-	fclose(fp);
-	free(proc);
-
-	return value;
-}
-#endif
-
 static char
 read_key(bool block)
 {
@@ -343,15 +306,6 @@ open_shell(void)
 	run_program(shell);
 }
 
-_dead static void
-single_user(void)
-{
-	rc_logger_close();
-	execl(SHUTDOWN, SHUTDOWN, "now", (char *) NULL);
-	eerrorx("%s: unable to exec `" SHUTDOWN "': %s",
-	    applet, strerror(errno));
-}
-
 static bool
 set_krunlevel(const char *level)
 {
@@ -379,11 +333,11 @@ set_krunlevel(const char *level)
 	return true;
 }
 
-static int
+static size_t
 get_krunlevel(char *buffer, int buffer_len)
 {
 	FILE *fp;
-	int i = 0;
+	size_t i = 0;
 
 	if (!exists(RC_KRUNLEVEL))
 		return 0;
@@ -704,6 +658,7 @@ do_start_services(bool parallel)
 			interactive = want_interactive();
 
 		if (interactive) {
+			parallel = false;
 	interactive_retry:
 			printf("\n");
 			einfo("About to start the service %s",
@@ -838,6 +793,13 @@ main(int argc, char **argv)
 	env_filter();
 	env_config();
 
+	/* complain about old configuration settings if they exist */
+	if (exists(RC_CONF_OLD)) {
+		ewarn("%s still exists on your system and should be removed.",
+				RC_CONF_OLD);
+		ewarn("Please migrate to the appropriate settings in %s", RC_CONF);
+	}
+
 	argc++;
 	argv--;
 	while ((opt = getopt_long(argc, argv, getoptstring,
@@ -871,16 +833,9 @@ main(int argc, char **argv)
 			eerrorx("%s: %s", applet, strerror(errno));
 			/* NOTREACHED */
 		case 'S':
-			if (rc_conf_value("rc_sys")) {
-				bootlevel = rc_sys_v2();
-				if (bootlevel)
-					printf("%s\n", bootlevel);
-			} else {
-				ewarn("WARNING: rc_sys not defined in rc.conf. Falling back to automatic detection");
-				bootlevel = rc_sys_v1();
-				if (bootlevel)
-					printf("%s\n", bootlevel);
-			}
+			bootlevel = rc_sys();
+			if (bootlevel)
+				printf("%s\n", bootlevel);
 			exit(EXIT_SUCCESS);
 			/* NOTREACHED */
 		case_RC_COMMON_GETOPT
@@ -960,9 +915,9 @@ main(int argc, char **argv)
 #ifdef __linux__
 			if (strcmp(newlevel, RC_LEVEL_SYSINIT) == 0) {
 				/* If we requested a runlevel, save it now */
-				p = proc_getent("rc_runlevel");
+				p = rc_proc_getent("rc_runlevel");
 				if (p == NULL)
-					p = proc_getent("softlevel");
+					p = rc_proc_getent("softlevel");
 				if (p != NULL) {
 					set_krunlevel(p);
 					free(p);
@@ -1114,7 +1069,7 @@ main(int argc, char **argv)
 
 #ifdef __linux__
 	/* mark any services skipped as started */
-	proc = p = proc_getent("noinit");
+	proc = p = rc_proc_getent("noinit");
 	if (proc) {
 		while ((token = strsep(&p, ",")))
 			rc_service_mark(token, RC_SERVICE_STARTED);
@@ -1135,7 +1090,7 @@ main(int argc, char **argv)
 
 #ifdef __linux__
 	/* mark any services skipped as stopped */
-	proc = p = proc_getent("noinit");
+	proc = p = rc_proc_getent("noinit");
 	if (proc) {
 		while ((token = strsep(&p, ",")))
 			rc_service_mark(token, RC_SERVICE_STOPPED);

@@ -38,7 +38,7 @@ _ifindex()
 					echo "${x#/dev/net}"
 					return 0
 				fi
-				i=$((${i} + 1))
+				: $(( i += 1 ))
 			done
 			;;
 		default)
@@ -47,7 +47,7 @@ _ifindex()
 					echo "${i}"
 					return 0
 				fi
-				i=$((${i} + 1))
+				: $(( i += 1 ))
 			done
 			;;
 	esac
@@ -241,4 +241,24 @@ ifconfig_post_start()
 		done
 		eend 0
 	fi
+}
+
+# Is the interface administratively/operationally up?
+# The 'UP' status in ifconfig is the administrative status
+# Operational state does not seem to be available in BSD?
+# 0: up
+# 1: down
+# 2: invalid arguments
+is_admin_up()
+{
+	local iface="$1"
+	[ -z "$iface" ] && iface="$IFACE"
+	ifconfig "${iface}" | \
+	sed -n '1,1{ /flags=.*[<,]UP[,>]/{ q 0 }}; q 1; '
+}
+
+is_oper_up()
+{
+	eerror "TODO: is_oper_up not available on BSD"
+	return 2
 }

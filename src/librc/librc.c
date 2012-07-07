@@ -216,7 +216,6 @@ rc_sys_v2(void)
 		}
 		/* Now do detection */
 		__STRING_SWITCH(systype)
-		__STRING_CASE(RC_SYS_PREFIX)	{ return RC_SYS_PREFIX; }
 #ifdef __FreeBSD__
 		__STRING_CASE(RC_SYS_JAIL) { return RC_SYS_JAIL; }
 #endif /* __FreeBSD__ */
@@ -246,10 +245,6 @@ librc_hidden_def(rc_sys_v2)
 const char *
 rc_sys_v1(void)
 {
-#ifdef PREFIX
-	return RC_SYS_PREFIX;
-#else
-
 #ifdef __FreeBSD__
 	int jailed = 0;
 	size_t len = sizeof(jailed);
@@ -281,10 +276,11 @@ rc_sys_v1(void)
 	else if (file_regex("/proc/self/status",
 		"envID:[[:space:]]*[1-9]"))
 		return RC_SYS_OPENVZ; /* old test */
+	else if (file_regex("/proc/1/environ", "container=lxc"))
+		return RC_SYS_LXC;
 #endif
 
 	return NULL;
-#endif /* PREFIX */
 }
 librc_hidden_def(rc_sys_v1)
 
@@ -490,7 +486,7 @@ rc_service_exists(const char *service)
 {
 	char *file;
 	bool retval = false;
-	int len;
+	size_t len;
 	struct stat buf;
 
 	if (!service) {
@@ -524,7 +520,9 @@ rc_service_exists(const char *service)
 }
 librc_hidden_def(rc_service_exists)
 
-#define OPTSTR ". '%s'; echo $extra_commands $extra_started_commands"
+#define OPTSTR \
+". '%s'; echo $extra_commands $extra_started_commands $extra_stopped_commands"
+
 RC_STRINGLIST *
 rc_service_extra_commands(const char *service)
 {
@@ -767,19 +765,15 @@ librc_hidden_def(rc_service_state)
 char *
 rc_service_value_get(const char *service, const char *option)
 {
-	FILE *fp;
-	char *line = NULL;
+	char *buffer = NULL;
 	size_t len = 0;
 	char file[PATH_MAX];
 
 	snprintf(file, sizeof(file), RC_SVCDIR "/options/%s/%s",
 	    service, option);
-	if ((fp = fopen(file, "r"))) {
-		rc_getline(&line, &len, fp);
-		fclose(fp);
-	}
+	rc_getfile(file, &buffer, &len);
 
-	return line;
+	return buffer;
 }
 librc_hidden_def(rc_service_value_get)
 

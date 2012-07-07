@@ -7,14 +7,13 @@ description="Update /etc/mtab to match what the kernel knows about"
 depend()
 {
 	need root
-	keyword -prefix
 }
 
 start()
 {
-	# /etc/mtab could be a symlink to /proc/mounts
-	if [ ! -w /etc/mtab -a -L /etc/mtab ]; then
-		eeinfo "Skipping mtab update (non writeable symlink)"
+	if [ -L /etc/mtab ]
+	then
+		einfo "Skipping mtab update (mtab is a symbolic link)"
 		return 0
 	fi
 

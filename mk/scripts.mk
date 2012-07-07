@@ -12,14 +12,13 @@ _PKG_SED:=		$(shell ${_PKG_SED_SH})
 _LCL_SED_SH=		if test "${PREFIX}" = "${LOCAL_PREFIX}"; then echo "-e 's:@LOCAL_PREFIX@::g'"; else echo "-e 's:@LOCAL_PREFIX@:${LOCAL_PREFIX}:g'"; fi
 _LCL_SED:=		$(shell ${_LCL_SED_SH})
 
-SED_REPLACE=		-e 's:@SHELL@:${SH}:g' -e 's:@LIB@:${LIBNAME}:g' -e 's:@SYSCONFDIR@:${SYSCONFDIR}:g' -e 's:@LIBEXECDIR@:${LIBEXECDIR}:g' -e 's:@PREFIX@:${PREFIX}:g' -e 's:@RC_SYS_DEFAULT@:${MKRCSYS}:g' ${_PKG_SED} ${_LCL_SED}
+SED_REPLACE=		-e 's:@SHELL@:${SH}:g' -e 's:@LIB@:${LIBNAME}:g' -e 's:@SYSCONFDIR@:${SYSCONFDIR}:g' -e 's:@LIBEXECDIR@:${LIBEXECDIR}:g' -e 's:@PREFIX@:${PREFIX}:g' ${_PKG_SED} ${_LCL_SED}
 
 # Tweak our shell scripts
-.SUFFIXES:	.sh.in .in
-.sh.in.sh:
+%.sh: %.sh.in
 	${SED} ${SED_REPLACE} ${SED_EXTRA} $< > $@
 
-.in:
+%: %.in
 	${SED} ${SED_REPLACE} ${SED_EXTRA} $< > $@
 
 all: ${OBJS} ${TARGETS}
@@ -54,6 +53,6 @@ check test::
 # so we ensure that it has a bogus argument
 CLEANFILES+=	${OBJS}
 clean:
-	@if test -n "${CLEANFILES}"; then echo "rm -f ${CLEANFILES}"; rm -f ${CLEANFILES}; fi 
+	@if test -n "${CLEANFILES}"; then echo "rm -f ${CLEANFILES}"; rm -f ${CLEANFILES}; fi
 
 include ${MK}/gitignore.mk

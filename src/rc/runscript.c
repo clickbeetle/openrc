@@ -75,7 +75,7 @@
 #define WARN_TIMEOUT	10		/* warn about this every N seconds */
 
 static const char *applet;
-static char *service, *runlevel, *ibsave, *prefix;;
+static char *service, *runlevel, *ibsave, *prefix;
 static RC_DEPTREE *deptree;
 static RC_STRINGLIST *applet_list, *services, *tmplist;
 static RC_STRINGLIST *restart_services, *need_services, *use_services;
@@ -288,6 +288,13 @@ cleanup(void)
 #endif
 }
 
+/* Buffer and lock all output messages so that we get readable content */
+/* FIXME: Use a dynamic lock file that contains the tty/pts as well.
+ * For example openrc-pts8.lock or openrc-tty1.lock.
+ * Using a static lock file makes no sense, esp. in multi-user environments.
+ * Why don't we use (f)printf, as it is thread-safe through POSIX already?
+ * Bug: 360013
+ */
 static int
 write_prefix(const char *buffer, size_t bytes, bool *prefixed)
 {
@@ -297,14 +304,20 @@ write_prefix(const char *buffer, size_t bytes, bool *prefixed)
 	ssize_t ret = 0;
 	int fd = fileno(stdout), lock_fd = -1;
 
-	/* Spin until we lock the prefix */
-	for (;;) {
-		lock_fd = open(PREFIX_LOCK, O_WRONLY | O_CREAT, 0664);
-		if (lock_fd != -1)
-			if (flock(lock_fd, LOCK_EX) == 0)
-				break;
-		close(lock_fd);
+	/*
+	 * Lock the prefix.
+	 * open() may fail here when running as user, as RC_SVCDIR may not be writable.
+	 */
+	lock_fd = open(PREFIX_LOCK, O_WRONLY | O_CREAT, 0664);
+
+	if (lock_fd != -1) {
+		if (flock(lock_fd, LOCK_EX) != 0)
+			eerror("flock() failed: %s", strerror(errno));
 	}
+#ifdef RC_DEBUG
+	else
+		ewarn("Couldn't open the prefix lock, please make sure you have enough permissions");
+#endif
 
 	for (i = 0; i < bytes; i++) {
 		/* We don't prefix eend calls (cursor up) */
@@ -332,6 +345,7 @@ write_prefix(const char *buffer, size_t bytes, bool *prefixed)
 
 	/* Release the lock */
 	close(lock_fd);
+
 	return ret;
 }
 
@@ -821,7 +835,7 @@ svc_start(void)
 		svc_start_real();
 }
 
-static void
+static int
 svc_stop_check(RC_SERVICE *state)
 {
 	*state = rc_service_state(service);
@@ -848,7 +862,7 @@ svc_stop_check(RC_SERVICE *state)
 
 	if (*state & RC_SERVICE_STOPPED) {
 		ewarn("WARNING: %s is already stopped", applet);
-		exit(EXIT_SUCCESS);
+		return 1;
 	}
 
 	rc_service_mark(service, RC_SERVICE_STOPPING);
@@ -861,6 +875,8 @@ svc_stop_check(RC_SERVICE *state)
 		else if (rc_service_in_runlevel(service, RC_LEVEL_BOOT))
 			ewarn("WARNING: you are stopping a boot service");
 	}
+
+	return 0;
 }
 
 static void
@@ -986,7 +1002,7 @@ svc_stop_real(void)
 	rc_plugin_run(RC_HOOK_SERVICE_STOP_OUT, applet);
 }
 
-static void
+static int
 svc_stop(void)
 {
 	RC_SERVICE state;
@@ -995,13 +1011,16 @@ svc_stop(void)
 	if (dry_run)
 		einfon("stop:");
 	else
-		svc_stop_check(&state);
+		if (svc_stop_check(&state) == 1)
+			return 1; /* Service has been stopped already */
 	if (deps)
 		svc_stop_deps(state);
 	if (dry_run)
 		printf(" %s\n", applet);
 	else
 		svc_stop_real();
+
+	return 0;
 }
 
 static void
@@ -1074,12 +1093,13 @@ service_plugable(void)
 }
 
 #include "_usage.h"
-#define getoptstring "dDsvl:Z" getoptstring_COMMON
+#define getoptstring "dDsSvl:Z" getoptstring_COMMON
 #define extraopts "stop | start | restart | describe | zap"
 static const struct option longopts[] = {
 	{ "debug",      0, NULL, 'd'},
 	{ "dry-run",    0, NULL, 'Z'},
 	{ "ifstarted",  0, NULL, 's'},
+	{ "ifstopped",  0, NULL, 'S'},
 	{ "nodeps",     0, NULL, 'D'},
 	{ "lockfd",     1, NULL, 'l'},
 	longopts_COMMON
@@ -1088,6 +1108,7 @@ static const char *const longopts_help[] = {
 	"set xtrace when running the script",
 	"show what would be done",
 	"only run commands when started",
+	"only run commands when stopped",
 	"ignore dependencies",
 	"fd of the exclusive lock from rc",
 	longopts_help_COMMON
@@ -1100,10 +1121,11 @@ runscript(int argc, char **argv)
 	bool doneone = false;
 	int retval, opt, depoptions = RC_DEP_TRACE;
 	RC_STRING *svc;
-	char path[PATH_MAX], lnk[PATH_MAX], *dir, *save = NULL, *save2 = NULL;
+	char path[PATH_MAX], lnk[PATH_MAX];
+	char *dir, *save = NULL, *saveLnk = NULL;
 	char pidstr[10];
 	size_t l = 0, ll;
-	const char *file;
+ 	const char *file;
 	struct stat stbuf;
 
 	/* Show help if insufficient args */
@@ -1133,8 +1155,8 @@ runscript(int argc, char **argv)
 		dir = dirname(path);
 		if (strchr(lnk, '/')) {
 			save = xstrdup(dir);
-			save2 = xstrdup(lnk);
-			dir = dirname(save2);
+			saveLnk = xstrdup(lnk);
+			dir = dirname(saveLnk);
 			if (strcmp(dir, save) == 0)
 				file = basename_c(argv[1]);
 			else
@@ -1150,7 +1172,7 @@ runscript(int argc, char **argv)
 			service = xstrdup(lnk);
 		}
 		free(save);
-		free(save2);
+		free(saveLnk);
 	}
 	if (!service)
 		service = xstrdup(path);
@@ -1229,13 +1251,17 @@ runscript(int argc, char **argv)
 			if (!(rc_service_state(service) & RC_SERVICE_STARTED))
 				exit(EXIT_FAILURE);
 			break;
+		case 'S':
+			if (!(rc_service_state(service) & RC_SERVICE_STOPPED))
+				exit(EXIT_FAILURE);
+			break;
 		case 'D':
 			deps = false;
 			break;
 		case 'Z':
 			dry_run = true;
 			break;
-			case_RC_COMMON_GETOPT;
+		case_RC_COMMON_GETOPT
 		}
 
 	/* If we're changing runlevels and not called by rc then we cannot
@@ -1333,12 +1359,6 @@ runscript(int argc, char **argv)
 			prefix = NULL;
 			retval = svc_exec("status", NULL);
 		} else {
-			if (strcmp(optarg, "pause") == 0) {
-				ewarn("WARNING: 'pause' is deprecated; please use '--nodeps stop'");
-				deps = false;
-				optarg = "stop";
-			}
-
 			if (strcmp(optarg, "conditionalrestart") == 0 ||
 			    strcmp(optarg, "condrestart") == 0)
 			{
@@ -1349,10 +1369,15 @@ runscript(int argc, char **argv)
 				svc_restart();
 			} else if (strcmp(optarg, "start") == 0) {
 				svc_start();
-			} else if (strcmp(optarg, "stop") == 0) {
+			} else if (strcmp(optarg, "stop") == 0 || strcmp(optarg, "pause") == 0) {
+				if (strcmp(optarg, "pause") == 0) {
+					ewarn("WARNING: 'pause' is deprecated; please use '--nodeps stop'");
+					deps = false;
+				}
 				if (deps && in_background)
 					get_started_services();
-				svc_stop();
+				if (svc_stop() == 1)
+					continue; /* Service has been stopped already */
 				if (deps) {
 					if (!in_background &&
 					    !rc_runlevel_stopping() &&
@@ -1381,7 +1406,7 @@ runscript(int argc, char **argv)
 					    strerror(errno));
 				unhotplug();
 			} else
-				svc_exec(optarg, NULL);
+				retval = svc_exec(optarg, NULL);
 
 			/* We should ensure this list is empty after
 			 * an action is done */

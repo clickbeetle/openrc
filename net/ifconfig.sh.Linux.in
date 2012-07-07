@@ -3,7 +3,7 @@
 
 ifconfig_depend()
 {
-	program /sbin/ifconfig
+	program /sbin/ifconfig /bin/ifconfig
 	provide interface
 }
 
@@ -19,24 +19,24 @@ _down()
 
 _exists()
 {
-	grep -Eq "^[[:space:]]*${IFACE}:" /proc/net/dev
+	[ -e /sys/class/net/"$IFACE" ]
 }
 
 _ifindex()
 {
-	local line= i=-2
-	while read line; do
-		i=$((${i} + 1))
-		[ ${i} -lt 1 ] && continue
-		case "${line}" in
-			"${IFACE}:"*) echo "${i}"; return 0;;
-		esac
-	done < /proc/net/dev
-
-	# Return the next available index
-	i=$((${i} + 1))
-	echo "${i}"
-	return 1
+	local index=-1
+	local f v
+	if [ -e /sys/class/net/"${IFACE}"/ifindex ]; then
+		index=$(cat /sys/class/net/"${IFACE}"/ifindex)
+	else
+		for f in /sys/class/net/*/ifindex ; do
+			v=$(cat $f)
+			[ $v -gt $index ] && index=$v
+		done
+		: $(( index += 1 ))
+	fi
+	echo "${index}"
+	return 0
 }
 
 _is_wireless()
@@ -96,7 +96,7 @@ _get_inet_addresses()
 		_exists || break
 		local addr="$(_get_inet_address)"
 		[ -n "${addr}" ] && addrs="${addrs}${addrs:+ }${addr}"
-		i=$((${i} + 1))
+		: $(( i += 1 ))
 	done
 	echo "${addrs}"
 }
@@ -106,26 +106,26 @@ _cidr2netmask()
 	local cidr="$1" netmask="" done=0 i=0 sum=0 cur=128
 	local octets= frac=
 
-	local octets=$((${cidr} / 8))
-	local frac=$((${cidr} % 8))
+	local octets=$(( cidr / 8 ))
+	local frac=$(( cidr % 8 ))
 	while [ ${octets} -gt 0 ]; do
 		netmask="${netmask}.255"
-		octets=$((${octets} - 1))
-		done=$((${done} + 1))
+		: $(( octets -= 1 ))
+		: $(( done += 1 ))
 	done
 
 	if [ ${done} -lt 4 ]; then
 		while [ ${i} -lt ${frac} ]; do
-			sum=$((${sum} + ${cur}))
-			cur=$((${cur} / 2))
-			i=$((${i} + 1))
+			: $(( sum += cur ))
+			: $(( cur /= 2 ))
+			: $(( i += 1 ))
 		done
 		netmask="${netmask}.${sum}"
-		done=$((${done} + 1))
+		: $(( done += 1 ))
 
 		while [ ${done} -lt 4 ]; do
 			netmask="${netmask}.0"
-			done=$((${done} + 1))
+			: $(( done += 1 ))
 		done
 	fi
 
@@ -150,7 +150,7 @@ _add_address()
 		# Get the last alias made for the interface and add 1 to it
 		i=$(ifconfig | sed '1!G;h;$!d' | grep -m 1 -o "^${iface}:[0-9]*" \
 			| sed -n -e 's/'"${iface}"'://p')
-		i=$((${i:-0} + 1))
+		: $(( i = ${i:-0} + 1 ))
 		iface="${iface}:${i}"
 	fi
 
@@ -188,6 +188,12 @@ _add_route()
 	if [ "$1" = "-A" -o "$1" = "-f" -o "$1" = "-family" ]; then
 		family="-A $2"
 		shift; shift
+	elif [ "$1" = "-4" ]; then
+	    family="-A inet"
+		shift
+	elif [ "$1" = "-6" ]; then
+	    family="-A inet6"
+		shift
 	fi
 
 	if [ -n "${metric}" ]; then
@@ -296,4 +302,27 @@ ifconfig_post_stop()
 	ebegin "Destroying tunnel ${IFACE}"
 	iptunnel del "${IFACE}"
 	eend $?
+}
+
+# Is the interface administratively/operationally up?
+# The 'UP' status in ifconfig/iproute2 is the administrative status
+# Operational state is available in iproute2 output as 'state UP', or the
+# operstate sysfs variable.
+# 0: up
+# 1: down
+# 2: invalid arguments
+is_admin_up()
+{
+	local iface="$1"
+	[ -z "$iface" ] && iface="$IFACE"
+	ifconfig "${iface}" | \
+	sed -n '1,1{ /flags=.*[<,]UP[,>]/{ q 0 }}; q 1; '
+}
+
+is_oper_up()
+{
+	local iface="$1"
+	[ -z "$iface" ] && iface="$IFACE"
+	read state </sys/class/net/"${iface}"/operstate
+	[ "x$state" = "up" ]
 }

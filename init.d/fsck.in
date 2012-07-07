@@ -9,7 +9,7 @@ _IFS="
 depend()
 {
 	use dev clock modules
-	keyword -jail -openvz -prefix -timeout -vserver -lxc
+	keyword -jail -openvz -timeout -vserver -lxc
 }
 
 _abort() {
@@ -48,8 +48,13 @@ start()
 
 	if [ -n "$fsck_passno" ]; then
 		check_extra="[passno $fsck_passno] $check_extra"
+		if [ -n "$fsck_mnt" ]; then
+			eerror "Only 1 of fsck_passno and fsck_mnt must be set!"
+			return 1
+		fi
 	fi
 	ebegin "Checking local filesystems $check_extra"
+	# Append passno mounts
 	for p in $fsck_passno; do
 		local IFS="$_IFS"
 		case "$p" in
@@ -58,10 +63,21 @@ start()
 		set -- "$@" $(fstabinfo --passno "$p")
 		unset IFS
 	done
+	# Append custom mounts
+	for m in $fsck_mnt ; do
+		local IFS="$_IFS"
+		set -- "$@" "$m"
+		unset IFS
+	done
 
 	if [ "$RC_UNAME" = Linux ]; then
-		fsck_opts="$fsck_opts -C0 -T"
-		if [ -z "$fsck_passno" ]; then
+		local skiptypes x
+		for x in $net_fs_list $extra_net_fs_list; do
+			skiptypes="${skiptypes}no${x},"
+		done
+		skiptypes="${skiptypes}noopts=_netdev"
+		fsck_opts="$fsck_opts -C0 -T -t $skiptypes"
+		if [ -z "$fsck_passno" -a -z "$fsck_mnt" ]; then
 			fsck_args=${fsck_args--A -p}
 			if echo 2>/dev/null >/.test.$$; then
 				rm -f /.test.$$
@@ -91,7 +107,7 @@ start()
 			_reboot
 		fi;;
 	8)	ewend 1 "Operational error"; return 0;;
-	12)	ewend 1 "fsck interupted";;
+	12)	ewend 1 "fsck interrupted";;
 	*)	eend 2 "Filesystems couldn't be fixed";;
 	esac
 	_abort || return 1

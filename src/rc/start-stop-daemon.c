@@ -107,12 +107,17 @@ static char *changeuser, *ch_root, *ch_dir;
 
 extern char **environ;
 
-#ifdef __linux__
+#if !defined(SYS_ioprio_set) && defined(__NR_ioprio_set)
+# define SYS_ioprio_set __NR_ioprio_set
+#endif
 static inline int ioprio_set(int which, int who, int ioprio)
 {
+#ifdef SYS_ioprio_set
 	return syscall(SYS_ioprio_set, which, who, ioprio);
-}
+#else
+	return 0;
 #endif
+}
 
 static void
 free_schedulelist(void)
@@ -187,7 +192,7 @@ parse_signal(const char *sig)
 	else
 		s = NULL;
 
-	for (i = 0; i < sizeof(signallist) / sizeof(signallist[0]); i++)
+	for (i = 0; i < ARRAY_SIZE(signallist); ++i)
 		if (strcmp(sig, signallist[i].name) == 0 ||
 		    (s && strcmp(s, signallist[i].name) == 0))
 			return signallist[i].signal;
@@ -911,8 +916,8 @@ start_stop_daemon(int argc, char **argv)
 			redirect_stderr = optarg;
 			break;
 
-			case_RC_COMMON_GETOPT
-			    }
+		case_RC_COMMON_GETOPT
+		}
 
 	endpwent();
 	argc -= optind;
@@ -1150,13 +1155,10 @@ start_stop_daemon(int argc, char **argv)
 				    strerror(errno));
 		}
 
-/* Only linux suports setting an IO priority */
-#ifdef __linux__
 		if (ionicec != -1 &&
 		    ioprio_set(1, mypid, ionicec | ioniced) == -1)
 			eerrorx("%s: ioprio_set %d %d: %s", applet,
 			    ionicec, ioniced, strerror(errno));
-#endif
 
 		if (ch_root && chroot(ch_root) < 0)
 			eerrorx("%s: chroot `%s': %s",
@@ -1176,22 +1178,18 @@ start_stop_daemon(int argc, char **argv)
 		}
 
 #ifdef HAVE_PAM
-		if (changeuser != NULL)
+		if (changeuser != NULL) {
 			pamr = pam_start("start-stop-daemon",
 			    changeuser, &conv, &pamh);
-		else
-			pamr = pam_start("start-stop-daemon",
-			    "nobody", &conv, &pamh);
 
-		if (pamr == PAM_SUCCESS)
-			pamr = pam_authenticate(pamh, PAM_SILENT);
-		if (pamr == PAM_SUCCESS)
-			pamr = pam_acct_mgmt(pamh, PAM_SILENT);
-		if (pamr == PAM_SUCCESS)
-			pamr = pam_open_session(pamh, PAM_SILENT);
-		if (pamr != PAM_SUCCESS)
-			eerrorx("%s: pam error: %s",
-			    applet, pam_strerror(pamh, pamr));
+			if (pamr == PAM_SUCCESS)
+				pamr = pam_acct_mgmt(pamh, PAM_SILENT);
+			if (pamr == PAM_SUCCESS)
+				pamr = pam_open_session(pamh, PAM_SILENT);
+			if (pamr != PAM_SUCCESS)
+				eerrorx("%s: pam error: %s",
+					applet, pam_strerror(pamh, pamr));
+		}
 #endif
 
 		if (gid && setgid(gid))
@@ -1219,15 +1217,17 @@ start_stop_daemon(int argc, char **argv)
 			rc_stringlist_add(env_list, environ[i++]);
 
 #ifdef HAVE_PAM
-		pamenv = (const char *const *)pam_getenvlist(pamh);
-		if (pamenv) {
-			while (*pamenv) {
-				/* Don't add strings unless they set a var */
-				if (strchr(*pamenv, '='))
-					putenv(xstrdup(*pamenv));
-				else
-					unsetenv(*pamenv);
-				pamenv++;
+		if (changeuser != NULL) {
+			pamenv = (const char *const *)pam_getenvlist(pamh);
+			if (pamenv) {
+				while (*pamenv) {
+					/* Don't add strings unless they set a var */
+					if (strchr(*pamenv, '='))
+						putenv(xstrdup(*pamenv));
+					else
+						unsetenv(*pamenv);
+					pamenv++;
+				}
 			}
 		}
 #endif
@@ -1304,7 +1304,7 @@ start_stop_daemon(int argc, char **argv)
 		setsid();
 		execvp(exec, argv);
 #ifdef HAVE_PAM
-		if (pamr == PAM_SUCCESS)
+		if (changeuser != NULL && pamr == PAM_SUCCESS)
 			pam_close_session(pamh, PAM_SILENT);
 #endif
 		eerrorx("%s: failed to exec `%s': %s",

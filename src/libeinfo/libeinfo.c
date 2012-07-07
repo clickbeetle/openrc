@@ -51,6 +51,7 @@ const char libeinfo_copyright[] = "Copyright (c) 2007-2008 Roy Marples";
 #include <unistd.h>
 
 #include "einfo.h"
+#include "helpers.h"
 #include "hidden-visibility.h"
 
 hidden_proto(ecolor)
@@ -134,7 +135,7 @@ static const struct ecolor ecolors[] = {
 	{ ECOLOR_BRACKET, BRACKET, "bracket" },
 	{ ECOLOR_NORMAL,  0,       NULL      },
 };
-static const char *ecolors_str[sizeof(ecolors)/sizeof(ecolors[0])];
+static const char *ecolors_str[ARRAY_SIZE(ecolors)];
 
 static char *flush = NULL;
 static char *up = NULL;
@@ -224,27 +225,6 @@ strlcat(char *dst, const char *src, size_t size)
 	*d = '\0';
 
 	return dst_n + (s - src);
-}
-
-static size_t
-strlcpy(char *dst, const char *src, size_t size)
-{
-	const char *s = src;
-	size_t n = size;
-
-	if (n && --n)
-		do {
-			if (!(*dst++ = *src++))
-				break;
-		} while (--n);
-
-	if (!n) {
-		if (size)
-			*dst = '\0';
-		while (*src++);
-	}
-
-	return src - s - 1;
 }
 #  endif
 #endif
@@ -462,7 +442,7 @@ colour_terminal(FILE * EINFO_RESTRICT f)
 
 	/* Now setup our colours */
 	p = ebuffer;
-	for (i = 0; i < sizeof(ecolors) / sizeof(ecolors[0]); i++) {
+	for (i = 0; i < ARRAY_SIZE(ecolors); ++i) {
 		tmp[0] = '\0';
 		if (ecolors[i].name) {
 			bold = _md;
@@ -598,7 +578,7 @@ _ecolor(FILE * EINFO_RESTRICT f, ECOLOR color)
 	if (!colour_terminal(f))
 		return "";
 
-	for (i = 0; i < sizeof(ecolors) / sizeof(ecolors[0]); i++)
+	for (i = 0; i < ARRAY_SIZE(ecolors); ++i)
 		if (ecolors[i].color == color)
 			return ecolors_str[i];
 	return "";
@@ -725,7 +705,7 @@ ewarn(const char *EINFO_RESTRICT fmt, ...)
 	int retval;
 	va_list ap;
 
-	if (!fmt || is_quiet())
+	if (!fmt)
 		return 0;
 	va_start(ap, fmt);
 	elogv(LOG_WARNING, fmt, ap);
